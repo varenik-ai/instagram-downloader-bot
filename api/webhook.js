@@ -6,7 +6,9 @@ import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const DAILY_LIMIT = parseInt(process.env.DAILY_LIMIT || "10");
+const ADMIN_ID = 2120086742;
 const COUNTERS_FILE = join(tmpdir(), "counters_ig.json");
 
 function getCounters() {
@@ -141,20 +143,17 @@ function sendPhotoBuffer(chatId, buffer, caption) {
   });
 }
 
-// Получаем медиа через igram.world
 async function getInstagramMedia(url) {
   return new Promise((resolve, reject) => {
-    const formData = `url=${encodeURIComponent(url)}&lang=en`;
+    const encodedUrl = encodeURIComponent(url);
     const options = {
-      hostname: "igram.world",
-      path: "/api/convert",
-      method: "POST",
+      hostname: "insta-reels-downloader-the-fastest-hd-reels-fetcher-api.p.rapidapi.com",
+      path: `/unified/index?url=${encodedUrl}`,
+      method: "GET",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Content-Length": Buffer.byteLength(formData),
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-        "Referer": "https://igram.world/",
-        "Origin": "https://igram.world"
+        "Content-Type": "application/json",
+        "x-rapidapi-host": "insta-reels-downloader-the-fastest-hd-reels-fetcher-api.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY
       }
     };
     const req = https.request(options, res => {
@@ -163,21 +162,16 @@ async function getInstagramMedia(url) {
       res.on("end", () => {
         try {
           const json = JSON.parse(buf);
-          // igram возвращает массив медиа
-          if (Array.isArray(json) && json.length > 0) {
-            resolve(json);
-          } else if (json.url) {
-            resolve([{ url: json.url, type: json.type || "video" }]);
-          } else {
-            reject(new Error("Media not found: " + buf.slice(0, 200)));
+          // Уведомляем админа если лимит исчерпан
+          if (json.message && json.message.includes("limit")) {
+            sendMessage(ADMIN_ID, `⚠️ <b>Instagram Bot</b>\n\nRapidAPI лимит исчерпан!\nПополни план на rapidapi.com`);
           }
-        } catch {
-          reject(new Error("Parse error: " + buf.slice(0, 200)));
-        }
+          if (json.success) resolve(json);
+          else reject(new Error(json.message || "API error"));
+        } catch { reject(new Error("Parse error: " + buf.slice(0, 100))); }
       });
     });
     req.on("error", reject);
-    req.write(formData);
     req.end();
   });
 }
@@ -229,19 +223,30 @@ export default async function handler(req, res) {
   const waitMsgId = waitMsg?.result?.message_id;
 
   try {
-    const mediaList = await getInstagramMedia(text);
-    const media = mediaList[0];
-    const mediaUrl = media.url || media.src || media.download_url;
-    const isVideo = (media.type || "").includes("video") || mediaUrl.includes(".mp4");
-
+    const json = await getInstagramMedia(text);
+    const mediaType = json.media_type;
+    const content = json.data?.content;
     const caption = isRu
       ? "❤️ Скачано @insta_save_pro_bot"
       : "❤️ Downloaded by @insta_save_pro_bot";
 
-    const buffer = await downloadBuffer(mediaUrl);
-    const fileSizeMb = buffer.length / (1024 * 1024);
+    // Получаем список медиафайлов
+    let items = [];
+    if (mediaType === "sidecar" && content?.items) {
+      items = content.items;
+    } else if (content?.media_url) {
+      items = [{ type: mediaType === "video" ? "video" : "photo", media_url: content.media_url }];
+    }
+
+    if (items.length === 0) throw new Error("No media found");
 
     if (waitMsgId) await deleteMessage(chatId, waitMsgId);
+
+    // Отправляем первый медиафайл
+    const item = items[0];
+    const isVideo = item.type === "video";
+    const buffer = await downloadBuffer(item.media_url);
+    const fileSizeMb = buffer.length / (1024 * 1024);
 
     if (isVideo) {
       if (fileSizeMb > 50) {
@@ -263,12 +268,21 @@ export default async function handler(req, res) {
       }
     }
 
+    // Если карусель — сообщаем сколько ещё файлов
+    if (items.length > 1) {
+      await sendMessage(chatId,
+        isRu
+          ? `📎 В этом посте ещё ${items.length - 1} файл(ов). Отправь ссылку ещё раз чтобы получить следующий.`
+          : `📎 This post has ${items.length - 1} more file(s).`
+      );
+    }
+
   } catch (err) {
     if (waitMsgId) await deleteMessage(chatId, waitMsgId);
     await sendMessage(chatId,
       isRu
-        ? `❌ <b>Не удалось скачать медиа</b>\n\nВозможные причины:\n• Аккаунт приватный\n• Неверная ссылка\n• Попробуй ещё раз через минуту\n\n<i>Ошибка: ${err.message}</i>`
-        : `❌ <b>Failed to download media</b>\n\nPossible reasons:\n• Private account\n• Invalid link\n• Try again in a minute\n\n<i>Error: ${err.message}</i>`
+        ? `❌ <b>Не удалось скачать медиа</b>\n\nВозможные причины:\n• Аккаунт приватный\n• Неверная ссылка\n• Попробуй ещё раз через минуту`
+        : `❌ <b>Failed to download media</b>\n\nPossible reasons:\n• Private account\n• Invalid link\n• Try again in a minute`
     );
   }
 
