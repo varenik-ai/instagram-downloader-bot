@@ -60,11 +60,11 @@ function deleteMessage(chatId, messageId) {
 }
 
 function sendVideo(chatId, videoUrl, caption) {
-  return tgRequest("sendVideo", { chat_id: chatId, video: videoUrl, caption, parse_mode: "HTML", supports_streaming: true });
+  return tgRequest("sendVideo", { chat_id: chatId, video: videoUrl, caption, supports_streaming: true });
 }
 
 function sendPhoto(chatId, photoUrl, caption) {
-  return tgRequest("sendPhoto", { chat_id: chatId, photo: photoUrl, caption, parse_mode: "HTML" });
+  return tgRequest("sendPhoto", { chat_id: chatId, photo: photoUrl, caption });
 }
 
 async function getInstagramMedia(url) {
@@ -152,8 +152,8 @@ export default async function handler(req, res) {
     const mediaType = json.media_type;
     const content = json.data?.content;
     const caption = isRu
-      ? "❤️ Скачано @insta_save_pro_bot"
-      : "❤️ Downloaded by @insta_save_pro_bot";
+      ? "❤️ Скачано @insta_pro_save_bot"
+      : "❤️ Downloaded by @insta_pro_save_bot";
 
     let items = [];
     if (mediaType === "sidecar" && content?.items) {
@@ -170,14 +170,11 @@ export default async function handler(req, res) {
     const isVideo = item.type === "video";
 
     if (isVideo) {
-      // Отправляем URL напрямую — Telegram сам скачает
       const result = await sendVideo(chatId, item.media_url, caption);
       if (!result?.ok) {
-        // Если не получилось — даём кнопку скачать
         await tgRequest("sendMessage", {
           chat_id: chatId,
           text: caption + (isRu ? "\n\n⬇️ Нажми чтобы скачать" : "\n\n⬇️ Tap to download"),
-          parse_mode: "HTML",
           reply_markup: JSON.stringify({
             inline_keyboard: [[{ text: isRu ? "⬇️ Скачать видео" : "⬇️ Download video", url: item.media_url }]]
           })
