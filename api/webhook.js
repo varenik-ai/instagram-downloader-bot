@@ -141,18 +141,20 @@ function sendPhotoBuffer(chatId, buffer, caption) {
   });
 }
 
+// Получаем медиа через igram.world
 async function getInstagramMedia(url) {
   return new Promise((resolve, reject) => {
-    const formData = `url=${encodeURIComponent(url)}`;
+    const formData = `url=${encodeURIComponent(url)}&lang=en`;
     const options = {
-      hostname: "indown.io",
-      path: "/api/ajaxSearch",
+      hostname: "igram.world",
+      path: "/api/convert",
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "Content-Length": Buffer.byteLength(formData),
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://indown.io/"
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+        "Referer": "https://igram.world/",
+        "Origin": "https://igram.world"
       }
     };
     const req = https.request(options, res => {
@@ -161,9 +163,17 @@ async function getInstagramMedia(url) {
       res.on("end", () => {
         try {
           const json = JSON.parse(buf);
-          if (json.status === "ok" && json.data) resolve(json.data);
-          else reject(new Error("Media not found"));
-        } catch { reject(new Error("Parse error")); }
+          // igram возвращает массив медиа
+          if (Array.isArray(json) && json.length > 0) {
+            resolve(json);
+          } else if (json.url) {
+            resolve([{ url: json.url, type: json.type || "video" }]);
+          } else {
+            reject(new Error("Media not found: " + buf.slice(0, 200)));
+          }
+        } catch {
+          reject(new Error("Parse error: " + buf.slice(0, 200)));
+        }
       });
     });
     req.on("error", reject);
@@ -219,16 +229,11 @@ export default async function handler(req, res) {
   const waitMsgId = waitMsg?.result?.message_id;
 
   try {
-    const data = await getInstagramMedia(text);
+    const mediaList = await getInstagramMedia(text);
+    const media = mediaList[0];
+    const mediaUrl = media.url || media.src || media.download_url;
+    const isVideo = (media.type || "").includes("video") || mediaUrl.includes(".mp4");
 
-    const mediaUrl = data.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/)?.[1]
-      || data.match(/href="(https:\/\/[^"]+\.jpg[^"]*)"/)?.[1]
-      || data.match(/(https:\/\/[^\s"<>]+\.mp4)/)?.[1]
-      || data.match(/(https:\/\/[^\s"<>]+\.jpg)/)?.[1];
-
-    if (!mediaUrl) throw new Error("Media not found");
-
-    const isVideo = mediaUrl.includes(".mp4");
     const caption = isRu
       ? "❤️ Скачано @insta_save_pro_bot"
       : "❤️ Downloaded by @insta_save_pro_bot";
@@ -262,8 +267,8 @@ export default async function handler(req, res) {
     if (waitMsgId) await deleteMessage(chatId, waitMsgId);
     await sendMessage(chatId,
       isRu
-        ? `❌ <b>Не удалось скачать медиа</b>\n\nВозможные причины:\n• Аккаунт приватный\n• Неверная ссылка\n• Попробуй ещё раз через минуту`
-        : `❌ <b>Failed to download media</b>\n\nPossible reasons:\n• Private account\n• Invalid link\n• Try again in a minute`
+        ? `❌ <b>Не удалось скачать медиа</b>\n\nВозможные причины:\n• Аккаунт приватный\n• Неверная ссылка\n• Попробуй ещё раз через минуту\n\n<i>Ошибка: ${err.message}</i>`
+        : `❌ <b>Failed to download media</b>\n\nPossible reasons:\n• Private account\n• Invalid link\n• Try again in a minute\n\n<i>Error: ${err.message}</i>`
     );
   }
 
