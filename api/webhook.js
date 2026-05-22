@@ -1,9 +1,7 @@
 import https from "https";
-import http from "http";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { randomBytes } from "crypto";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
@@ -61,86 +59,12 @@ function deleteMessage(chatId, messageId) {
   return tgRequest("deleteMessage", { chat_id: chatId, message_id: messageId });
 }
 
-function downloadBuffer(url) {
-  return new Promise((resolve, reject) => {
-    const lib = url.startsWith("https") ? https : http;
-    const req = lib.get(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-        "Referer": "https://www.instagram.com/"
-      }
-    }, res => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return downloadBuffer(res.headers.location).then(resolve).catch(reject);
-      }
-      const chunks = [];
-      res.on("data", c => chunks.push(c));
-      res.on("end", () => resolve(Buffer.concat(chunks)));
-    });
-    req.on("error", reject);
-    req.end();
-  });
+function sendVideo(chatId, videoUrl, caption) {
+  return tgRequest("sendVideo", { chat_id: chatId, video: videoUrl, caption, parse_mode: "HTML", supports_streaming: true });
 }
 
-function sendVideoBuffer(chatId, buffer, caption) {
-  return new Promise((resolve, reject) => {
-    const boundary = randomBytes(16).toString("hex");
-    const part1 = Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n` +
-      `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n` +
-      `--${boundary}\r\nContent-Disposition: form-data; name="supports_streaming"\r\n\r\ntrue\r\n` +
-      `--${boundary}\r\nContent-Disposition: form-data; name="video"; filename="video.mp4"\r\nContent-Type: video/mp4\r\n\r\n`
-    );
-    const part2 = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body = Buffer.concat([part1, buffer, part2]);
-    const options = {
-      hostname: "api.telegram.org",
-      path: `/bot${BOT_TOKEN}/sendVideo`,
-      method: "POST",
-      headers: {
-        "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        "Content-Length": body.length
-      }
-    };
-    const req = https.request(options, res => {
-      let buf = "";
-      res.on("data", c => buf += c);
-      res.on("end", () => resolve(JSON.parse(buf)));
-    });
-    req.on("error", reject);
-    req.write(body);
-    req.end();
-  });
-}
-
-function sendPhotoBuffer(chatId, buffer, caption) {
-  return new Promise((resolve, reject) => {
-    const boundary = randomBytes(16).toString("hex");
-    const part1 = Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n` +
-      `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n` +
-      `--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="photo.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`
-    );
-    const part2 = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body = Buffer.concat([part1, buffer, part2]);
-    const options = {
-      hostname: "api.telegram.org",
-      path: `/bot${BOT_TOKEN}/sendPhoto`,
-      method: "POST",
-      headers: {
-        "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        "Content-Length": body.length
-      }
-    };
-    const req = https.request(options, res => {
-      let buf = "";
-      res.on("data", c => buf += c);
-      res.on("end", () => resolve(JSON.parse(buf)));
-    });
-    req.on("error", reject);
-    req.write(body);
-    req.end();
-  });
+function sendPhoto(chatId, photoUrl, caption) {
+  return tgRequest("sendPhoto", { chat_id: chatId, photo: photoUrl, caption, parse_mode: "HTML" });
 }
 
 async function getInstagramMedia(url) {
@@ -162,9 +86,10 @@ async function getInstagramMedia(url) {
       res.on("end", () => {
         try {
           const json = JSON.parse(buf);
-          // Уведомляем админа если лимит исчерпан
-          if (json.message && json.message.includes("limit")) {
+          if (json.message && (json.message.includes("limit") || json.message.includes("exceeded"))) {
             sendMessage(ADMIN_ID, `⚠️ <b>Instagram Bot</b>\n\nRapidAPI лимит исчерпан!\nПополни план на rapidapi.com`);
+            reject(new Error("API limit exceeded"));
+            return;
           }
           if (json.success) resolve(json);
           else reject(new Error(json.message || "API error"));
@@ -230,7 +155,6 @@ export default async function handler(req, res) {
       ? "❤️ Скачано @insta_save_pro_bot"
       : "❤️ Downloaded by @insta_save_pro_bot";
 
-    // Получаем список медиафайлов
     let items = [];
     if (mediaType === "sidecar" && content?.items) {
       items = content.items;
@@ -242,37 +166,34 @@ export default async function handler(req, res) {
 
     if (waitMsgId) await deleteMessage(chatId, waitMsgId);
 
-    // Отправляем первый медиафайл
     const item = items[0];
     const isVideo = item.type === "video";
-    const buffer = await downloadBuffer(item.media_url);
-    const fileSizeMb = buffer.length / (1024 * 1024);
 
     if (isVideo) {
-      if (fileSizeMb > 50) {
-        await sendMessage(chatId,
-          isRu
-            ? `❌ Видео слишком большое (${fileSizeMb.toFixed(1)} МБ). Telegram принимает до 50 МБ.`
-            : `❌ Video is too large (${fileSizeMb.toFixed(1)} MB). Telegram supports up to 50 MB.`
-        );
-      } else {
-        const result = await sendVideoBuffer(chatId, buffer, caption);
-        if (!result?.ok) {
-          await sendMessage(chatId, isRu ? "❌ Не удалось отправить видео." : "❌ Failed to send video.");
-        }
+      // Отправляем URL напрямую — Telegram сам скачает
+      const result = await sendVideo(chatId, item.media_url, caption);
+      if (!result?.ok) {
+        // Если не получилось — даём кнопку скачать
+        await tgRequest("sendMessage", {
+          chat_id: chatId,
+          text: caption + (isRu ? "\n\n⬇️ Нажми чтобы скачать" : "\n\n⬇️ Tap to download"),
+          parse_mode: "HTML",
+          reply_markup: JSON.stringify({
+            inline_keyboard: [[{ text: isRu ? "⬇️ Скачать видео" : "⬇️ Download video", url: item.media_url }]]
+          })
+        });
       }
     } else {
-      const result = await sendPhotoBuffer(chatId, buffer, caption);
+      const result = await sendPhoto(chatId, item.media_url, caption);
       if (!result?.ok) {
         await sendMessage(chatId, isRu ? "❌ Не удалось отправить фото." : "❌ Failed to send photo.");
       }
     }
 
-    // Если карусель — сообщаем сколько ещё файлов
     if (items.length > 1) {
       await sendMessage(chatId,
         isRu
-          ? `📎 В этом посте ещё ${items.length - 1} файл(ов). Отправь ссылку ещё раз чтобы получить следующий.`
+          ? `📎 В посте ещё ${items.length - 1} файл(ов).`
           : `📎 This post has ${items.length - 1} more file(s).`
       );
     }
